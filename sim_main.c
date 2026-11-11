@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include "exmemwb.h"
 #include "except.h"
 #include "decode.h"
@@ -9,6 +11,11 @@
 #include "programpoints.h"
 
 char *simulatingFilePath = 0;
+// Used to track resource usage and execution time.
+// The end values are set (and the differences computed)
+// in function 'b()' in exmemwb_branch.c.
+struct timeval start_time, end_time;
+struct rusage start_rusage, end_rusage;
 
 // Load a program into the simulator's RAM
 static void fillState(const char *pFileName)
@@ -103,23 +110,60 @@ void printState()
 
 void sim_exit(int i)
 {
-  if(cpu.debug)
-  {
-    rsp.stalled = cpu.debug;
-    rsp_trap(); 
+#ifdef __linux__
+    long long wall_secs, user_secs, system_secs, wall_usecs, user_usecs, system_usecs;
 
-    if(i != 0)
-      fprintf(stderr, "Simulator exiting due to error...\n");
-    
-    while(rsp.stalled)
-      handle_rsp();
-  }
+    // Determine time and resource usage at end of simulation.
+    // Get time information first as it is duration-sensitive
+    // and has a low resource usage.
+    if (gettimeofday(&end_time, NULL) < 0)
+      perror("b(): gettimeofday");
+    if (getrusage(RUSAGE_SELF, &end_rusage) < 0)
+      perror("b(): getrusage");
+
+    // wallclock time: struct timeval difference (tv_sec, tv_usec fields)
+    // user time: struct rusage field ru_utime (itself a struct timeval)
+    // system time: struct rusage field ru_stime (itself a struct timeval)
+
+#define DELTA_TIME(START_TVAL,END_TVAL,SECS,USECS)      \
+    SECS = (END_TVAL).tv_sec - (START_TVAL).tv_sec;     \
+    USECS = (END_TVAL).tv_usec - (START_TVAL).tv_usec;  \
+    if (USECS < 0)                                      \
+    {                                                   \
+        (SECS)--;                                       \
+        (USECS) += 1000000;                             \
+    }
+
+    DELTA_TIME(start_time, end_time, wall_secs, wall_usecs);
+    DELTA_TIME(start_rusage.ru_utime, end_rusage.ru_utime, user_secs, user_usecs);
+    DELTA_TIME(start_rusage.ru_stime, end_rusage.ru_stime, system_secs, system_usecs);
+
+    // Print performance information.
+    fprintf(stderr,
+            "\nSimulation speed:\n%12.6f Mticks/s\n%12.6f Minsns/s\n%5d.%06d sec elapsed\n%5d.%06d sec user\n%5d.%06d sec system\n",
+            ((float)cycleCount)/ 1000000.0 / ((float)wall_secs + wall_usecs / 1000000.0),
+            ((float)insnCount) / 1000000.0 / ((float)wall_secs + wall_usecs / 1000000.0),
+            wall_secs, wall_usecs,
+            user_secs, user_usecs,
+            system_secs, system_usecs);
+#endif
+    if (cpu.debug)
+    {
+      rsp.stalled = cpu.debug;
+      rsp_trap();
+
+      if (i != 0)
+        fprintf(stderr, "Simulator exiting due to error...\n");
+
+      while (rsp.stalled)
+        handle_rsp();
+    }
 
 #ifdef PROGRAM_POINTS
     program_point_print();
 #endif
 
-  exit(i);
+    exit(i);
 }
 
 
@@ -131,10 +175,28 @@ int main(int argc, char *argv[])
     char *value_end;
     int i;
 
-    if(argc < 2)
+    if (argc < 2)
     {
-        fprintf(stderr, "Usage: %s [-g] [-pw|-pb] [-t|-s] [--from-pc ADDR] [--to-pc ADDR] memory_file\n", argv[0]);
-        return 1;
+      // Print short usage information.
+      fprintf(stderr, "Usage: %s [-h|--help] [-g] [-pw|-pb] [-t|-s] [-c] [--from-pc ADDR] [--to-pc ADDR] memory_file\n", argv[0]);
+      return 1;
+    }
+
+    if (argc == 2 && (0 == strcmp("-h", argv[1]) || 0 == strcmp("--help", argv[1])))
+    {
+      // Print long usage information.
+      fprintf(stderr, "Usage: %s [-h|--help] [-g] [-pw|-pb] [-t|-s] [-c] [--from-pc ADDR] [--to-pc ADDR] memory_file\n\n", argv[0]);
+      fprintf(stderr, "\t-h, --help\tPrint this help message and exit.\n");
+      fprintf(stderr, "\t-pw\t\tEnable word-sized fetch buffer for Flash and RAM\n\t\t\t  instruction accesses.\n");
+      fprintf(stderr, "\t-pb\t\tEnable three-word prefetch buffer for Flash fetch\n\t\t\t\  accesses and single word-sized fetch buffer for RAM accesses.\n");
+      fprintf(stderr, "\t-s\t\tEnable event counting ('summary' mode), disable tracing.\n");
+      fprintf(stderr, "\t-t\t\tEnable tracing, disable event counting.\n");
+      fprintf(stderr, "\t-c\t\tUse CSV format to report event counts (default NO).\n");
+      fprintf(stderr, "\t--from-pc=ADDR\tStart event counting upon reaching PC value ADDR.\n");
+      fprintf(stderr, "\t--to-pc=ADDR\tStop event counting upon reaching PC value ADDR.\n");
+      fprintf(stderr, "\t-g\t\t[UNTESTED] Enable GDB server mode to support remote debugging\n\t\t\t  (default port 272727).\n");
+      fprintf(stderr, "\tmemory_file\tBinary memory image file to be loaded at address 0x08000000.\n");
+      return 1;
     }
 
     // Name of the binary file must come last on command line
@@ -163,7 +225,7 @@ int main(int argc, char *argv[])
       {
         // SUMMARY mode: Disable trace, enable differential event reporting.
         doTrace = 0;
-        logAllEvents = 0;
+        logAllEvents = 1;
         i++;
       }
       else if (0 == strcmp("-t", argv[i]))
@@ -286,6 +348,13 @@ int main(int argc, char *argv[])
     // Execute the program
     // Simulation will terminate when it executes insn == 0xBFAA or jump-to-self.
     bool addToWasted = 0;
+
+    // Track execution time and resource usage
+    if (getrusage(RUSAGE_SELF, &start_rusage) < 0)
+      perror("sim_main: getrusage");
+    if (gettimeofday(&start_time, NULL) < 0)
+      perror("sim_main:gettimeofday");
+
     while(1)
     {
 #ifdef PROGRAM_POINTS
@@ -330,7 +399,7 @@ int main(int argc, char *argv[])
           {
             // Start the logging of events.
             fprintf(stderr, "### Trace started at PC=%08X\n", trace_start_pc & (~1U));
-                tracingActive = 1;
+            tracingActive = 1;
             if (useCSVoutput)
               printStatsCSV();
             else
@@ -398,7 +467,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-          if(tracingActive || logAllEvents)
+          if(tracingActive && logAllEvents)
           {
             taken_branches++;
             // Branching to a target not aligned on a word boundary incurs a penalty on 32-bit-only
@@ -523,6 +592,7 @@ int main(int argc, char *argv[])
         stopTrigger = traceTrigger && !tracingActive;
 #endif
     }
+
 
     return 0;
 }

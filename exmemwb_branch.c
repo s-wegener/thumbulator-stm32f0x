@@ -88,7 +88,7 @@ u32 b()
     // Stop simulation on a branch-to-self, i.e., when offset == 0xfffffffc.
     if (offset == 0xfffffffc)
     {
-        printf("Program exit (branch-to-self) after\n\t%lu ticks\n\t%lu instructions\n", cycleCount, insnCount);
+        fprintf(stderr, "Program exit (branch-to-self) after\n\t%lu ticks\n\t%lu instructions\n", cycleCount, insnCount);
         // printStats();
         sim_exit(0);
     }
@@ -195,7 +195,7 @@ u32 b_c()
     // Bcc is 16 bits long at cpu_get_pc() - 4.  If cpu_get_pc() was NOT word aligned,
     // a 32-bit fetch may have been issued and would need to be canceled.
     if (((cpu_get_pc() & 0x2) == 0x2)
-        && (tracingActive || logAllEvents))
+        && (tracingActive && logAllEvents))
         {
             // nonword_taken_branches++;
             branch_fetch_stall = 1;

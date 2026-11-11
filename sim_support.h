@@ -169,7 +169,7 @@ extern u32 PRINT_STATE_DIFF;
     extern void (* gprReadHooks[16])(void);
     extern void (* gprWriteHooks[16])(void);
 #endif
-char simValidMem(u32 address); // Interface for rsp (GDB) server
+extern char simValidMem(u32 address); // Interface for rsp (GDB) server
 extern void saveStats(void);
 extern void printStats(void);
 extern void printStatsCSV(void);

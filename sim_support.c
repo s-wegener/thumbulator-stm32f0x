@@ -44,6 +44,7 @@ u64 flash_insn_reads = 0;
 u64 flash_writes = 0;
 u64 taken_branches = 0;
 u64 nonword_branch_destinations = 0;
+u64 ram_insn_prefetch_hits = 0;
 u64 flash_insn_prefetch_hits = 0;
 u64 nonword_taken_branches = 0;
 u64 bl_insns = 0, blx_insns = 0, bx_insns = 0;
@@ -62,6 +63,7 @@ u64 last_flash_insn_reads = 0;
 u64 last_flash_writes = 0;
 u64 last_taken_branches = 0;
 u64 last_nonword_branch_destinations = 0;
+u64 last_ram_insn_prefetch_hits = 0;
 u64 last_flash_insn_prefetch_hits = 0;
 u64 last_nonword_taken_branches = 0;
 u64 last_branch_fetch_stalls = 0;
@@ -108,7 +110,7 @@ bool useCSVoutput = 0;
 // Trace or differential counters: 1 if in progress.
 bool tracingActive = 0;
 // Log all events even if not tracing the execution in any way: 1 if enabled.
-bool logAllEvents = 1;
+bool logAllEvents = 0;
 bool takenBranch = 0;
 ADDRESS_LIST addressReadBeforeWriteList = {0, NULL};
 ADDRESS_LIST addressWriteBeforeReadList = {0, NULL};
@@ -160,6 +162,7 @@ void saveStats(void)
     last_flash_writes = flash_writes;
     last_taken_branches = taken_branches;
     last_nonword_branch_destinations = nonword_branch_destinations;
+    last_ram_insn_prefetch_hits = ram_insn_prefetch_hits;
     last_flash_insn_prefetch_hits = flash_insn_prefetch_hits;
     last_nonword_taken_branches = nonword_taken_branches;
     last_branch_fetch_stalls = branch_fetch_stalls;
@@ -203,7 +206,8 @@ void printStats(void)
     fprintf(stderr, "Taken branches:      %12ld\n", taken_branches);
     fprintf(stderr, "Nonword branch dsts: %12ld\n", nonword_branch_destinations);
     fprintf(stderr, "Nonword taken branch:%12ld\n", nonword_taken_branches);
-    fprintf(stderr, "Insn prefetch hits:  %12ld\n", flash_insn_prefetch_hits);
+    fprintf(stderr, "RAM prefetch hits:   %12ld\n", ram_insn_prefetch_hits);
+    fprintf(stderr, "Flash prefetch hits: %12ld\n", flash_insn_prefetch_hits);
     fprintf(stderr, "Branch fetch stalls: %12ld\n", branch_fetch_stalls);
     fprintf(stderr, "Arbitration clashes: %12ld\n", arbitration_conflicts);
     fprintf(stderr, "Load-after-load:     %12ld\n", load_after_load);
@@ -248,7 +252,8 @@ void printStatsDelta(void)
     fprintf(stderr, "Taken branches:      %12ld\n", taken_branches - last_taken_branches);
     fprintf(stderr, "Nonword branch dsts: %12ld\n", nonword_branch_destinations - last_nonword_branch_destinations);
     fprintf(stderr, "Nonword taken branch:%12ld\n", nonword_taken_branches - last_nonword_taken_branches);
-    fprintf(stderr, "Insn prefetch hits:  %12ld\n", flash_insn_prefetch_hits - last_flash_insn_prefetch_hits);
+    fprintf(stderr, "RAM prefetch hits:   %12ld\n", ram_insn_prefetch_hits - last_ram_insn_prefetch_hits);
+    fprintf(stderr, "Flash prefetch hits: %12ld\n", flash_insn_prefetch_hits - last_flash_insn_prefetch_hits);
     fprintf(stderr, "Branch fetch stalls: %12ld\n", branch_fetch_stalls - last_branch_fetch_stalls);
     fprintf(stderr, "Arbitration clashes: %12ld\n", arbitration_conflicts - last_arbitration_conflicts);
     fprintf(stderr, "Load-after-load:     %12ld\n", load_after_load - last_load_after_load);
@@ -311,19 +316,19 @@ void printStatsCSV(void)
  #endif
     if (statsReportCounter == 1)
       fprintf(f1, "RAM_data_reads, RAM_insn_reads, RAM_writes, Flash_data_reads, Flash_insn_reads, Flash_writes,"
-                  " Taken_branches, Nonword_branch_targets, Nonword taken branches, Insn prefetch hits, Branch_fetch_stalls,"
+                  " Taken_branches, Nonword_branch_targets, Nonword taken branches, RAM prefetch hits, Flash prefetch hits, Branch_fetch_stalls,"
                   " Arbitration_conflicts, Load after load, Load after store, Store after load, Store after store,"
                   " Use after load in LD, Use after load in ST, Use after load in ALU, Use after load CMP,"
                   " Burst loads, Burst stores, BL insns, BL word aligned, BLX insns, BX insns,"
                   " PUSH/POP high regs, PUSH/POP SP, PUSH/POP PC/LR\n");
     fprintf(f1, "%12ld, %12ld, %12ld, %12ld, %12ld, %12ld,"
-                " %12ld, %12ld, %12ld, %12ld, %12ld,"
+                " %12ld, %12ld, %12ld, %12ld, %12ld, %12ld,"
                 " %12ld, %12ld, %12ld, %12ld, %12ld,"
                 " %12ld, %12ld, %12ld, %12ld,"
                 " %12ld, %12ld, %12ld, %12ld, %12ld, %12ld,"
                 " %12ld, %12ld, %12ld\n",
                 ram_data_reads, ram_insn_reads, ram_writes, flash_data_reads, flash_insn_reads, flash_writes,
-                taken_branches, nonword_branch_destinations, nonword_taken_branches, flash_insn_prefetch_hits, branch_fetch_stalls,
+                taken_branches, nonword_branch_destinations, nonword_taken_branches, ram_insn_prefetch_hits, flash_insn_prefetch_hits, branch_fetch_stalls,
                 arbitration_conflicts, load_after_load, load_after_store, store_after_load, store_after_store,
                 use_after_load_ld, use_after_load_st, use_after_load_alu, use_after_load_cmp,
                 burst_loads, burst_stores, bl_insns, word_aligned_bl, blx_insns, bx_insns,
@@ -628,16 +633,44 @@ char simLoadInsn(u32 address, u16 *value)
         addressReads += addAddress(&addressReadBeforeWriteList, address);
     }
     // TODO: Add support of RAM word buffer.
-    if (tracingActive || logAllEvents)
+    if (prefetch_mode == PREFETCH_MODE_WORD || prefetch_mode == PREFETCH_MODE_BUFFER)
     {
-      ram_insn_reads++;
-      ram_access = 1;
-      if (data_access_in_cur_cycle)
-        arbitration_conflicts++;
+      if ((address & ~0x3) == last_fetched_address)
+      {
+        // Request address corresponds to the last fetched word.
+        fromMem = last_fetched_word;
+        if (tracingActive && logAllEvents)
+          ram_insn_prefetch_hits++;
+      }
+      else
+      {
+        // Request address does not match the last fetched word.
+        if (tracingActive && logAllEvents)
+        {
+          ram_insn_reads++;
+          ram_access = 1;
+          if (data_access_in_cur_cycle)
+            arbitration_conflicts++;
+        }
+        fromMem = ram[(address & RAM_ADDRESS_MASK) >> 2];
+          last_fetched_address = address & ~0x3;
+        last_fetched_word = fromMem;
+      }
     }
-    fromMem = ram[(address & RAM_ADDRESS_MASK) >> 2];
+    else  // Neither PREFETCH_MODE_WORD nor PREFETCH_MODE_BUFFER
+    {
+      // Original behavior: Plain load from RAM on every instruction.
+      fromMem = ram[(address & RAM_ADDRESS_MASK) >> 2];
+      if (tracingActive && logAllEvents)
+      {
+        ram_insn_reads++;
+        ram_access = 1;
+        if (data_access_in_cur_cycle)
+          arbitration_conflicts++;
+      }
+    }
   }
-  else
+  else  // Not a RAM access, so it should be inside Flash address range.
   {
     if(address >= (FLASH_START + FLASH_SIZE))
     {
@@ -651,13 +684,13 @@ char simLoadInsn(u32 address, u16 *value)
       {
         // Request address corresponds to the last fetched word.
         fromMem = last_fetched_word;
-        if (tracingActive || logAllEvents)
+        if (tracingActive && logAllEvents)
           flash_insn_prefetch_hits++;
       }
       else
       {
         // Request address does not match the last fetched word.
-        if (tracingActive || logAllEvents)
+        if (tracingActive && logAllEvents)
         {
           flash_insn_reads++;
           flash_access = 1;
@@ -683,7 +716,7 @@ char simLoadInsn(u32 address, u16 *value)
           fromMem = prefetch_words[i];
           prefetch_set_mru(i);
           is_a_hit = 1;
-          if (tracingActive || logAllEvents)
+          if (tracingActive && logAllEvents)
             flash_insn_prefetch_hits++;
           break;
         }
@@ -698,7 +731,7 @@ char simLoadInsn(u32 address, u16 *value)
         fromMem = flash[(address & FLASH_ADDRESS_MASK) >> 2];
         prefetch_words[victim] = fromMem;
         prefetch_addresses[victim] = address & ~0x3;
-        if (tracingActive || logAllEvents)
+        if (tracingActive && logAllEvents)
         {
           flash_insn_reads++;
           flash_access = 1;
@@ -711,7 +744,7 @@ char simLoadInsn(u32 address, u16 *value)
     {
       // Original behavior: Plain load from flash on every instruction.
       fromMem = flash[(address & FLASH_ADDRESS_MASK) >> 2];
-      if (tracingActive || logAllEvents)
+      if (tracingActive && logAllEvents)
       {
         flash_insn_reads++;
         flash_access = 1;
@@ -795,7 +828,7 @@ char simLoadData_internal(u32 address, u32 *value, u32 falseRead)
       if(!containsAddress(&addressWriteBeforeReadList, address))
         addressReads += addAddress(&addressReadBeforeWriteList, address);
     }
-    if ((tracingActive || logAllEvents) && !falseRead)
+    if ((tracingActive && logAllEvents) && !falseRead)
     {
       ram_data_reads++;
       ram_access = 1;
@@ -821,7 +854,7 @@ char simLoadData_internal(u32 address, u32 *value, u32 falseRead)
       fprintf(stderr, "Error: DLF Memory access out of range: 0x%8.8X, pc=%x\n", address, cpu_get_pc());
       sim_exit(1);
     }
-    if ((tracingActive || logAllEvents) && !falseRead)
+    if ((tracingActive && logAllEvents) && !falseRead)
     {
       flash_data_reads++;
       flash_access = 1;
@@ -905,27 +938,44 @@ char simStoreData(u32 address, u32 value)
         return 0;
       }
 
+// Shortcuts for GPIO control register offsets
+#define GPIOB_BSRR 0x08000418
+#define GPIOB_BRR  0x08000428
+#define GPIOC_BSRR 0x08000818
+#define GPIOC_BRR  0x08000828
+
       if(address >= MEMMAPIO_START && address <= (MEMMAPIO_START + MEMMAPIO_SIZE))
       {
-        // TeamPlay specific: Raising/clearing GPIOC[0] causes a cycle count message on console.
-        if (value == 0x1 && address == (MEMMAPIO_START + 0x08000818))
+        // TeamPlay specific: Raising/clearing GPIOB[0]/GPIOC[0] starts/stops event counting
+        // and produces a cycle and insn count message on console.
+        // On CameraPill, the trigger pin is GPIOB[0].
+        // On F0-Discovery and Nucleo-F0 boards the trigger pin is GPIOC[0].
+        if ((value == 0x1 && address == (MEMMAPIO_START + GPIOB_BSRR))
+            || (value == 0x1 && address == (MEMMAPIO_START + GPIOC_BSRR)))
         {
-          // Write 0x1 to GPIOC_BSRR[0]: Set the GPIOC[0] pin
-          fprintf(stderr, "TeamPlay: GPIOC[0] raised at cycle %lld, insn count %lld, pc = %x\n", cycleCount, insnCount, cpu_get_pc());
+          // Write 0x1 to GPIOB_BSRR[0] (resp. GPIOC_BSRR[0]): Set the GPIOB[0] (resp. GPIOC[0]) pin.
+          fprintf(stderr, "TeamPlay: trigger pin raised at cycle %lld, insn count %lld, pc = %x\n", cycleCount, insnCount, cpu_get_pc());
           // Start the logging of events.
-          tracingActive = 1;
-          if (useCSVoutput)
-            printStatsCSV();
-          else
-            saveStats();
+          if (logAllEvents)
+          {
+            tracingActive = 1;
+            if (useCSVoutput)
+              printStatsCSV();
+            else
+              saveStats();
+          }
           return 0;
         }
-        else if ((value == 0x1 && address == (MEMMAPIO_START + 0x08000828))
-                 || (value == 0x00010000 && address == (MEMMAPIO_START + 0x08000818)))
+        else if ((value == 0x1
+                  && (address == (MEMMAPIO_START + GPIOB_BRR)
+                      || address == (MEMMAPIO_START + GPIOC_BRR)))
+                 || (value == 0x00010000
+                     && (address == (MEMMAPIO_START + GPIOB_BSRR))
+                         || address == (MEMMAPIO_START + GPIOC_BSRR)))
         {
-          // Write 0x1 to GPIOC_BRR[0] or 0x1 to GPIOC_BSRR[16]: clear the GPIOC[0] pin
-          fprintf(stderr, "TeamPlay: GPIOC[0] cleared at cycle %lld, insn count %lld, pc = %x\n", cycleCount, insnCount, cpu_get_pc());
-          if (tracingActive)
+          // Write 0x1 to GPIOB_BRR[0]/GPIOC or 0x1 to GPIOB_BSRR[0]/GPIOC_BSRR[16]: clear the GPIOB[0]/GPIOC[0] pin.
+          fprintf(stderr, "TeamPlay: trigger pin cleared at cycle %lld, insn count %lld, pc = %x\n", cycleCount, insnCount, cpu_get_pc());
+          if (tracingActive && logAllEvents)
           {
             // Stop the logging of events.
             tracingActive = 0;
@@ -935,7 +985,7 @@ char simStoreData(u32 address, u32 value)
 	            // Print differential statistics.
               printStatsDelta();
           }
-	        else
+	        else if (logAllEvents)
 	          printStats();
           return 0;
         }
@@ -985,7 +1035,7 @@ char simStoreData(u32 address, u32 value)
     #endif
 
     ram[(address & RAM_ADDRESS_MASK) >> 2] = value;
-    if (tracingActive || logAllEvents)
+    if (tracingActive && logAllEvents)
     {
       ram_writes++;
       data_access_in_three_cycles = 1;
@@ -1015,7 +1065,7 @@ char simStoreData(u32 address, u32 value)
     #endif
       
     flash[(address & FLASH_ADDRESS_MASK) >> 2] = value;
-    if (tracingActive || logAllEvents)
+    if (tracingActive && logAllEvents)
     {
       flash_writes++;
       flash_access = 1;
